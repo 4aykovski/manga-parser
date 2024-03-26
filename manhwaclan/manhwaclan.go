@@ -1,23 +1,30 @@
 package manhwaclan
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/4aykovski/manga-parser"
+	"github.com/PuerkitoBio/goquery"
 	"github.com/gocolly/colly"
 )
 
 type ManhwaClanParser struct {
 	Collector *colly.Collector
-	projects  []parser.Project
+	projects  *[]parser.Project
 	errors    chan error
+	mutex     sync.Mutex
 }
 
 func New(log *slog.Logger, projectsForOnce int) *ManhwaClanParser {
-	_ = make([]parser.Project, projectsForOnce)
-	errors := make(chan error)
+	projects := make([]parser.Project, 0, projectsForOnce)
+	errorsChan := make(chan error)
+	var mu sync.Mutex
 
 	collector := colly.NewCollector()
 
@@ -26,19 +33,29 @@ func New(log *slog.Logger, projectsForOnce int) *ManhwaClanParser {
 	})
 
 	collector.OnError(func(r *colly.Response, err error) {
-		errors <- err
+		log.Info("error")
+		//errorsChan <- err
 	})
 
 	collector.OnHTML("html", func(e *colly.HTMLElement) {
 		project, _ := collectProjectInfo(e)
-		fmt.Println(project)
+
+		mu.Lock()
+		projects = append(projects, project)
+		mu.Unlock()
+
+		fmt.Println("collected", e.Request.URL.String())
 	})
 
-	return &ManhwaClanParser{Collector: collector}
+	return &ManhwaClanParser{
+		Collector: collector,
+		projects:  &projects,
+		errors:    errorsChan,
+		mutex:     mu,
+	}
 }
 
 func (p *ManhwaClanParser) Parse(projectUrl string) {
-
 	p.Collector.Visit(projectUrl)
 }
 
@@ -59,7 +76,7 @@ func collectProjectInfo(e *colly.HTMLElement) (parser.Project, error) {
 	// get project name from meta
 	projectName, ok := e.DOM.Find("meta[property='og:title']").Attr("content")
 	if !ok {
-		return parser.Project{}, fmt.Errorf("URL - %s: %w", e.Request.URL, parser.ErrTitleNameNotFound)
+		return parser.Project{}, fmt.Errorf("URL - %s: %w", e.Request.URL, parser.ErrProjectNameNotFound)
 	}
 
 	// get project description from meta
@@ -76,7 +93,17 @@ func collectProjectInfo(e *colly.HTMLElement) (parser.Project, error) {
 	}
 
 	// get project last updated at
-	lastChapter := chaptersList.Find("li").First()
+	lastUpdateDate, err := getLastUpdateDate(chaptersList)
+	if err != nil {
+		return parser.Project{}, fmt.Errorf("URL - %s: %w: %s", e.Request.URL, parser.ErrCantParseLastUpdateDate, err)
+	}
+
+	// get authors
+	var authors []string
+	authorNodes := e.DOM.Find("div.author-content").Find("a").Nodes
+	for _, authorNode := range authorNodes {
+		authors = append(authors, authorNode.FirstChild.Data)
+	}
 
 	return parser.Project{
 		Name:          projectName,
@@ -84,7 +111,68 @@ func collectProjectInfo(e *colly.HTMLElement) (parser.Project, error) {
 		Tags:          tags,
 		ChaptersCount: chaptersCount,
 		Chapters:      []parser.Chapter{},
-		LastUpdatedAt: time.Now(),
+		LastUpdatedAt: lastUpdateDate,
 		Description:   description,
+		Authors:       authors,
 	}, nil
+}
+
+func getLastUpdateDate(chaptersList *goquery.Selection) (time.Time, error) {
+	lastChapterReleaseDateSelection := chaptersList.
+		Find("li").
+		First().
+		Find("span.chapter-release-date").
+		First()
+
+	// There are two ways of html on manhwaclan
+	// 1. markup when last chapter was just released. This markup contains "a" tag with "title" attribute that contains
+	// information about how long ago chapter was released in format "N hours/days ago"
+	// 2. standard markup when last chapter was released a long time ago. This markup contains "i" tag with text inside.
+	// This text contains information about how long ago chapter was released in format "MMM DD, YYYY"
+	lastUpdateDate := time.Time{}
+	if lastChapterReleaseDateSelection.Find("a").Nodes != nil {
+		linkSelection := lastChapterReleaseDateSelection.Find("a")
+		titleAttr, ok := linkSelection.Attr("title")
+		if !ok {
+			return time.Time{}, errors.New("can't get 'title' attribute")
+		}
+
+		titleFormat := strings.Split(titleAttr, " ")
+		if len(titleFormat) > 3 {
+			return time.Time{}, errors.New("'title' attr too long")
+		}
+
+		switch titleFormat[1] {
+		case "hours":
+		case "hour":
+			days, err := strconv.Atoi(titleFormat[0])
+			if err != nil {
+				return time.Time{}, fmt.Errorf("can't convert: %w", err)
+			}
+			lastUpdateDate = time.Now().Add(-time.Duration(days) * time.Hour)
+		case "days":
+		case "day":
+			days, err := strconv.Atoi(titleFormat[0])
+			if err != nil {
+				return time.Time{}, fmt.Errorf("can't convert: %w", err)
+			}
+			lastUpdateDate = time.Now().Add(-time.Duration(days) * time.Hour * 24)
+		default:
+			return time.Time{}, errors.New("bat 'title' argument")
+		}
+	} else if lastChapterReleaseDateSelection.Find("i").Nodes != nil {
+		lastUpdateText := lastChapterReleaseDateSelection.Find("i").Text()
+
+		layout := "January 2, 2006"
+
+		var err error
+		lastUpdateDate, err = time.Parse(layout, lastUpdateText)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("can't convert: %w", err)
+		}
+	} else {
+		return time.Time{}, errors.New("can't find nodes")
+	}
+
+	return lastUpdateDate, nil
 }
