@@ -22,7 +22,8 @@ type Parser struct {
 	mutex     sync.Mutex
 }
 
-// New creates new manhwaclan parser
+// New creates new manhwaclan parser.
+// Defines Collector.OnRequest, Collector.OnError, Collector.OnHtml for manhwaclan parsing
 func New(log *slog.Logger, projectsForOnce int) *Parser {
 	projects := make([]parser.Project, 0, projectsForOnce)
 	errorsChan := make(chan error)
