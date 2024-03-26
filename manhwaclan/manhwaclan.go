@@ -33,13 +33,16 @@ func New(log *slog.Logger, projectsForOnce int) *ManhwaClanParser {
 	})
 
 	collector.OnError(func(r *colly.Response, err error) {
-		log.Info("error")
+		log.Error("error", slog.String("error", err.Error()))
 		//errorsChan <- err
 	})
 
 	collector.OnHTML("html", func(e *colly.HTMLElement) {
-		// TODO: add error handling
-		project, _ := collectProjectInfo(e)
+		// TODO: add error handling with channel
+		project, err := collectProjectInfo(e)
+		if err != nil {
+			log.Error("error", slog.String("error", err.Error()))
+		}
 
 		mu.Lock()
 		projects = append(projects, project)
@@ -69,6 +72,12 @@ func collectProjectInfo(e *colly.HTMLElement) (parser.Project, error) {
 	chaptersList := e.DOM.Find("ul.version-chap")
 	if chaptersList.Nodes == nil {
 		return parser.Project{}, fmt.Errorf("URL - %s: %w", e.Request.URL, parser.ErrChaptersNotFound)
+	}
+
+	// collect chapters info
+	chapters, err := collectChaptersInfo(chaptersList)
+	if err != nil {
+		return parser.Project{}, fmt.Errorf("URL - %s: %w", e.Request.URL, parser.ErrCantParseChapters)
 	}
 
 	// get chapters count
@@ -111,11 +120,17 @@ func collectProjectInfo(e *colly.HTMLElement) (parser.Project, error) {
 		Url:           e.Request.URL.String(),
 		Tags:          tags,
 		ChaptersCount: chaptersCount,
-		Chapters:      []parser.Chapter{},
+		Chapters:      chapters,
 		LastUpdatedAt: lastUpdateDate,
 		Description:   description,
 		Authors:       authors,
 	}, nil
+}
+
+func collectChaptersInfo(chaptersList *goquery.Selection) ([]parser.Chapter, error) {
+	chapters := make([]parser.Chapter, 0, len(chaptersList.Find("li").Nodes))
+
+	return chapters, nil
 }
 
 func getLastUpdateDate(chaptersList *goquery.Selection) (time.Time, error) {
