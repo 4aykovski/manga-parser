@@ -38,6 +38,7 @@ func New(log *slog.Logger, projectsForOnce int) *ManhwaClanParser {
 	})
 
 	collector.OnHTML("html", func(e *colly.HTMLElement) {
+		// TODO: add error handling
 		project, _ := collectProjectInfo(e)
 
 		mu.Lock()
