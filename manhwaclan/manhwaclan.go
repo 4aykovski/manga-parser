@@ -1,3 +1,4 @@
+// Package manhwaclan contains Parser for https://manhwaclan.com/ and can be used only with this domain.
 package manhwaclan
 
 import (
@@ -14,22 +15,25 @@ import (
 	"github.com/gocolly/colly"
 )
 
-type ManhwaClanParser struct {
+type Parser struct {
 	Collector *colly.Collector
 	projects  *[]parser.Project
 	errors    chan error
 	mutex     sync.Mutex
 }
 
-func New(log *slog.Logger, projectsForOnce int) *ManhwaClanParser {
+// New creates new manhwaclan parser
+func New(log *slog.Logger, projectsForOnce int) *Parser {
 	projects := make([]parser.Project, 0, projectsForOnce)
 	errorsChan := make(chan error)
 	var mu sync.Mutex
 
-	collector := colly.NewCollector()
+	collector := colly.NewCollector(
+		colly.AllowedDomains("manhwaclan.com"),
+	)
 
 	collector.OnRequest(func(r *colly.Request) {
-		log.Info("Visiting", r.URL.String())
+		log.Info("Visiting", slog.String("url", r.URL.String()))
 	})
 
 	collector.OnError(func(r *colly.Response, err error) {
@@ -51,7 +55,7 @@ func New(log *slog.Logger, projectsForOnce int) *ManhwaClanParser {
 		fmt.Println("collected", e.Request.URL.String())
 	})
 
-	return &ManhwaClanParser{
+	return &Parser{
 		Collector: collector,
 		projects:  &projects,
 		errors:    errorsChan,
@@ -59,14 +63,17 @@ func New(log *slog.Logger, projectsForOnce int) *ManhwaClanParser {
 	}
 }
 
-func (p *ManhwaClanParser) Parse(projectUrl string) {
+// Parse parses manhwaclan project by project url
+func (p *Parser) Parse(projectUrl string) {
 	p.Collector.Visit(projectUrl)
 }
 
-func (p *ManhwaClanParser) Errors() <-chan error {
+// Errors returns errors channel with errors that occurred during parsing
+func (p *Parser) Errors() <-chan error {
 	return p.errors
 }
 
+// collectProjectInfo collects project info from HTML
 func collectProjectInfo(e *colly.HTMLElement) (parser.Project, error) {
 	// get chapters list
 	chaptersList := e.DOM.Find("ul.version-chap")
@@ -127,12 +134,14 @@ func collectProjectInfo(e *colly.HTMLElement) (parser.Project, error) {
 	}, nil
 }
 
+// collectChaptersInfo collects chapters info from HTML chapters list
 func collectChaptersInfo(chaptersList *goquery.Selection) ([]parser.Chapter, error) {
 	chapters := make([]parser.Chapter, 0, len(chaptersList.Find("li").Nodes))
 
 	return chapters, nil
 }
 
+// getLastUpdateDate gets last update date from HTML chapters list
 func getLastUpdateDate(chaptersList *goquery.Selection) (time.Time, error) {
 	lastChapterReleaseDateSelection := chaptersList.
 		Find("li").
