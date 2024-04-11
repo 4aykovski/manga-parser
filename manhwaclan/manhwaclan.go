@@ -82,20 +82,20 @@ func collectProjectInfo(e *colly.HTMLElement) (parser.Project, error) {
 		return parser.Project{}, fmt.Errorf("URL - %s: %w", e.Request.URL, parser.ErrChaptersNotFound)
 	}
 
+	// get project name from meta
+	projectName, ok := e.DOM.Find("meta[property='og:title']").Attr("content")
+	if !ok {
+		return parser.Project{}, fmt.Errorf("URL - %s: %w", e.Request.URL, parser.ErrProjectNameNotFound)
+	}
+
 	// collect chapters info
-	chapters, err := collectChaptersInfo(chaptersList)
+	chapters, err := collectChaptersInfo(chaptersList, projectName)
 	if err != nil {
 		return parser.Project{}, fmt.Errorf("URL - %s: %w", e.Request.URL, parser.ErrCantParseChapters)
 	}
 
 	// get chapters count
 	chaptersCount := len(chaptersList.Find("li").Nodes)
-
-	// get project name from meta
-	projectName, ok := e.DOM.Find("meta[property='og:title']").Attr("content")
-	if !ok {
-		return parser.Project{}, fmt.Errorf("URL - %s: %w", e.Request.URL, parser.ErrProjectNameNotFound)
-	}
 
 	// get project description from meta
 	description, ok := e.DOM.Find("meta[property='og:description']").Attr("content")
@@ -136,8 +136,42 @@ func collectProjectInfo(e *colly.HTMLElement) (parser.Project, error) {
 }
 
 // collectChaptersInfo collects chapters info from HTML chapters list
-func collectChaptersInfo(chaptersList *goquery.Selection) ([]parser.Chapter, error) {
+func collectChaptersInfo(chaptersList *goquery.Selection, projectName string) ([]parser.Chapter, error) {
 	chapters := make([]parser.Chapter, 0, len(chaptersList.Find("li").Nodes))
+
+	//errs := make(chan error)
+
+	chaptersList.Find("li").Each(func(i int, s *goquery.Selection) {
+		chapterUrl := s.Find("a").AttrOr("href", "")
+
+		chapterReleaseDateSelection := s.
+			Find("span.chapter-release-date").
+			First()
+
+		chapterUploadedAt, err := getUploadDate(chapterReleaseDateSelection)
+		if err != nil {
+			// TODO: add error handling with channel
+			// errs <- err
+			return
+		}
+
+		chapterNumber, err := strconv.Atoi(strings.Split(s.Find("a").Text(), " ")[1])
+		if err != nil {
+			// TODO: add error handling with channel
+			// errs <- err
+			return
+		}
+
+		chapter := parser.Chapter{
+			ProjectName: projectName,
+			Name:        "",
+			Url:         chapterUrl,
+			Number:      chapterNumber,
+			UploadedAt:  chapterUploadedAt,
+		}
+
+		chapters = append(chapters, chapter)
+	})
 
 	return chapters, nil
 }
@@ -150,14 +184,24 @@ func getLastUpdateDate(chaptersList *goquery.Selection) (time.Time, error) {
 		Find("span.chapter-release-date").
 		First()
 
-	// There are two ways of html on manhwaclan
-	// 1. markup when last chapter was just released. This markup contains "a" tag with "title" attribute that contains
-	// information about how long ago chapter was released in format "N hours/days ago"
-	// 2. standard markup when last chapter was released a long time ago. This markup contains "i" tag with text inside.
-	// This text contains information about how long ago chapter was released in format "MMM DD, YYYY"
+	lastUpdateDate, err := getUploadDate(lastChapterReleaseDateSelection)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("can't get last update date: %w", err)
+	}
+
+	return lastUpdateDate, nil
+}
+
+// getUploadDate gets upload date from goquery Selection.
+// There are two ways of html on manhwaclan
+// 1. markup when last chapter was just released. This markup contains "a" tag with "title" attribute that contains
+// information about how long ago chapter was released in format "N hours/days ago"
+// 2. standard markup when last chapter was released a long time ago. This markup contains "i" tag with text inside.
+// This text contains information about how long ago chapter was released in format "MMM DD, YYYY"
+func getUploadDate(chapterSelection *goquery.Selection) (time.Time, error) {
 	lastUpdateDate := time.Time{}
-	if lastChapterReleaseDateSelection.Find("a").Nodes != nil {
-		linkSelection := lastChapterReleaseDateSelection.Find("a")
+	if chapterSelection.Find("a").Nodes != nil {
+		linkSelection := chapterSelection.Find("a")
 		titleAttr, ok := linkSelection.Attr("title")
 		if !ok {
 			return time.Time{}, errors.New("can't get 'title' attribute")
@@ -186,8 +230,8 @@ func getLastUpdateDate(chaptersList *goquery.Selection) (time.Time, error) {
 		default:
 			return time.Time{}, errors.New("bat 'title' argument")
 		}
-	} else if lastChapterReleaseDateSelection.Find("i").Nodes != nil {
-		lastUpdateText := lastChapterReleaseDateSelection.Find("i").Text()
+	} else if chapterSelection.Find("i").Nodes != nil {
+		lastUpdateText := chapterSelection.Find("i").Text()
 
 		layout := "January 2, 2006"
 
