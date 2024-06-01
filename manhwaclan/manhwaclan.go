@@ -16,11 +16,14 @@ import (
 	"github.com/4aykovski/manga-parser"
 )
 
+// Parser represents manhwaclan parser
 type Parser struct {
 	Collector *colly.Collector
-	projects  *[]parser.Project
-	errors    chan error
-	mutex     *sync.Mutex
+	// we use pointer to slice instead of simple slice because we need to update it in goroutine.
+	// If we use simple slice we can't do it because when we increase slice length in goroutine we won't get changes in main goroutine.
+	projects *[]parser.Project
+	errors   chan error
+	mutex    *sync.Mutex
 }
 
 // New creates new manhwaclan parser.
@@ -39,7 +42,7 @@ func New(log *slog.Logger, projectsForOnce int) *Parser {
 	})
 
 	collector.OnError(func(r *colly.Response, err error) {
-		errorsChan <- err
+		errorsChan <- fmt.Errorf("%s: %w", r.Request.URL, err)
 	})
 
 	collector.OnHTML("html", func(e *colly.HTMLElement) {
@@ -76,6 +79,18 @@ func (p *Parser) Close() {
 // If any errors was occurred it will be sent to errors channel that is returned by Errors method
 func (p *Parser) Parse(projectUrl string) {
 	p.Collector.Visit(projectUrl)
+}
+
+func (p *Parser) ParseMany(projectUrls []string) {
+	var wg sync.WaitGroup
+	wg.Add(len(projectUrls))
+	for _, projectUrl := range projectUrls {
+		go func(projectUrl string) {
+			defer wg.Done()
+			p.Parse(projectUrl)
+		}(projectUrl)
+	}
+	wg.Wait()
 }
 
 // Errors returns errors channel with errors that occurred during parsing

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"sync"
 
 	"github.com/4aykovski/manga-parser/manhwaclan"
 )
@@ -20,15 +19,7 @@ func main() {
 		"https://manhwaclan.com/manga/one-step-forward-to-the-flower-path/",
 		"https://manhwaclan.com/manga/the-lost-cinderella/",
 	}
-	var wg sync.WaitGroup
-	wg.Add(len(urls))
-	for _, url := range urls {
-		go func(url string) {
-			defer wg.Done()
-			parser.Parse(url)
-		}(url)
-	}
-	wg.Wait()
+	parser.ParseMany(urls)
 
 	parser.Close()
 
