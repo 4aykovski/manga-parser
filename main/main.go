@@ -16,13 +16,9 @@ func main() {
 	}))
 	parser := manhwaclan.New(log, 10)
 	urls := []string{
-		"https://manhwaclan.com/manga/why-would-a-villainess-have-virtues/",
-		"https://manhwaclan.com/manga/the-world-without-my-sister-who-everyone-loved/",
-		"https://manhwaclan.com/manga/apollos-heart/",
-		"https://manhwaclan.com/manga/muscle-joseon/",
-		"https://manhwaclan.com/manga/one-punch-man/",
-		"https://manhwaclan.com/manga/beauty-and-the-beasts/",
-		"https://manhwaclan.com/manga/divorce-is-the-condition/",
+		"https://manhwaclan.com/manga/one-punch-man",
+		"https://manhwaclan.com/manga/one-step-forward-to-the-flower-path/",
+		"https://manhwaclan.com/manga/the-lost-cinderella/",
 	}
 	var wg sync.WaitGroup
 	wg.Add(len(urls))
@@ -33,5 +29,17 @@ func main() {
 		}(url)
 	}
 	wg.Wait()
-	fmt.Println("123")
+
+	parser.Close()
+
+	errors := parser.Errors()
+	for err := range errors {
+		log.Error("Error", err)
+	}
+
+	projects := parser.Projects()
+	for _, project := range projects {
+		fmt.Println(project)
+		log.Info("Project", slog.String("name", project.Name), slog.String("url", project.Url))
+	}
 }

@@ -10,23 +10,24 @@ import (
 	"sync"
 	"time"
 
-	"github.com/4aykovski/manga-parser"
 	"github.com/PuerkitoBio/goquery"
 	"github.com/gocolly/colly"
+
+	"github.com/4aykovski/manga-parser"
 )
 
 type Parser struct {
 	Collector *colly.Collector
 	projects  *[]parser.Project
 	errors    chan error
-	mutex     sync.Mutex
+	mutex     *sync.Mutex
 }
 
 // New creates new manhwaclan parser.
 // Defines Collector.OnRequest, Collector.OnError, Collector.OnHtml for manhwaclan parsing
 func New(log *slog.Logger, projectsForOnce int) *Parser {
 	projects := make([]parser.Project, 0, projectsForOnce)
-	errorsChan := make(chan error)
+	errorsChan := make(chan error, projectsForOnce)
 	var mu sync.Mutex
 
 	collector := colly.NewCollector(
@@ -38,33 +39,41 @@ func New(log *slog.Logger, projectsForOnce int) *Parser {
 	})
 
 	collector.OnError(func(r *colly.Response, err error) {
-		log.Error("error", slog.String("error", err.Error()))
-		//errorsChan <- err
+		errorsChan <- err
 	})
 
 	collector.OnHTML("html", func(e *colly.HTMLElement) {
-		// TODO: add error handling with channel
 		project, err := collectProjectInfo(e)
 		if err != nil {
-			log.Error("error", slog.String("error", err.Error()))
+			errorsChan <- err
+			return
 		}
 
 		mu.Lock()
 		projects = append(projects, project)
 		mu.Unlock()
-
-		fmt.Println("collected", e.Request.URL.String())
 	})
 
 	return &Parser{
 		Collector: collector,
 		projects:  &projects,
 		errors:    errorsChan,
-		mutex:     mu,
+		mutex:     &mu,
 	}
 }
 
+// Projects returns list of parsed projects
+func (p *Parser) Projects() []parser.Project {
+	return *p.projects
+}
+
+// Close closes errors channel
+func (p *Parser) Close() {
+	close(p.errors)
+}
+
 // Parse parses manhwaclan project by project url
+// If any errors was occurred it will be sent to errors channel that is returned by Errors method
 func (p *Parser) Parse(projectUrl string) {
 	p.Collector.Visit(projectUrl)
 }
@@ -91,7 +100,7 @@ func collectProjectInfo(e *colly.HTMLElement) (parser.Project, error) {
 	// collect chapters info
 	chapters, err := collectChaptersInfo(chaptersList, projectName)
 	if err != nil {
-		return parser.Project{}, fmt.Errorf("URL - %s: %w", e.Request.URL, parser.ErrCantParseChapters)
+		return parser.Project{}, fmt.Errorf("URL - %s: %w - %w", e.Request.URL, parser.ErrCantParseChapters, err)
 	}
 
 	// get chapters count
@@ -105,7 +114,7 @@ func collectProjectInfo(e *colly.HTMLElement) (parser.Project, error) {
 
 	// get project tags
 	var tags []string
-	tagNodes := e.DOM.Find("div.genres-content").Find("a").Nodes
+	tagNodes := e.DOM.Find("div.genres-content").Find("-a").Nodes
 	for _, tagNode := range tagNodes {
 		tags = append(tags, tagNode.FirstChild.Data)
 	}
@@ -137,9 +146,9 @@ func collectProjectInfo(e *colly.HTMLElement) (parser.Project, error) {
 
 // collectChaptersInfo collects chapters info from HTML chapters list
 func collectChaptersInfo(chaptersList *goquery.Selection, projectName string) ([]parser.Chapter, error) {
-	chapters := make([]parser.Chapter, 0, len(chaptersList.Find("li").Nodes))
+	chapters := make([]parser.Chapter, 0, chaptersList.Find("li").Length())
 
-	//errs := make(chan error)
+	errs := make(chan error, chaptersList.Find("li").Length())
 
 	chaptersList.Find("li").Each(func(i int, s *goquery.Selection) {
 		chapterUrl := s.Find("a").AttrOr("href", "")
@@ -150,17 +159,11 @@ func collectChaptersInfo(chaptersList *goquery.Selection, projectName string) ([
 
 		chapterUploadedAt, err := getUploadDate(chapterReleaseDateSelection)
 		if err != nil {
-			// TODO: add error handling with channel
-			// errs <- err
+			errs <- err
 			return
 		}
 
-		chapterNumber, err := strconv.Atoi(strings.Split(s.Find("a").Text(), " ")[1])
-		if err != nil {
-			// TODO: add error handling with channel
-			// errs <- err
-			return
-		}
+		chapterNumber := strings.Split(s.Find("a").Text(), " ")[1]
 
 		chapter := parser.Chapter{
 			ProjectName: projectName,
@@ -172,6 +175,15 @@ func collectChaptersInfo(chaptersList *goquery.Selection, projectName string) ([
 
 		chapters = append(chapters, chapter)
 	})
+
+	close(errs)
+
+	// check if there was any errors and chapter wasn't added
+	for err := range errs {
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	return chapters, nil
 }
@@ -215,11 +227,11 @@ func getUploadDate(chapterSelection *goquery.Selection) (time.Time, error) {
 		switch titleFormat[1] {
 		case "hours":
 		case "hour":
-			days, err := strconv.Atoi(titleFormat[0])
+			hours, err := strconv.Atoi(titleFormat[0])
 			if err != nil {
 				return time.Time{}, fmt.Errorf("can't convert: %w", err)
 			}
-			lastUpdateDate = time.Now().Add(-time.Duration(days) * time.Hour)
+			lastUpdateDate = time.Now().Add(-time.Duration(hours) * time.Hour)
 		case "days":
 		case "day":
 			days, err := strconv.Atoi(titleFormat[0])
@@ -227,6 +239,13 @@ func getUploadDate(chapterSelection *goquery.Selection) (time.Time, error) {
 				return time.Time{}, fmt.Errorf("can't convert: %w", err)
 			}
 			lastUpdateDate = time.Now().Add(-time.Duration(days) * time.Hour * 24)
+		case "min":
+		case "mins":
+			mins, err := strconv.Atoi(titleFormat[0])
+			if err != nil {
+				return time.Time{}, fmt.Errorf("can't convert: %w", err)
+			}
+			lastUpdateDate = time.Now().Add(-time.Duration(mins) * time.Minute)
 		default:
 			return time.Time{}, errors.New("bat 'title' argument")
 		}
